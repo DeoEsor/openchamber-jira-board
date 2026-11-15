@@ -1,0 +1,55 @@
+{
+  "name": "jira-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bunx openchamber-guest-bundle panel/main.ts panel/main.js && bunx openchamber-guest-bundle --node service/main.ts service/main.js",
+    "check": "bunx openchamber-guest-check",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "2.7.2"
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.7.2"
+    },
+    "id": "jira-board",
+    "name": "Jira Board",
+    "icon": "window",
+    "contributes": {
+      "panel": {
+        "entry": "panel/index.html"
+      },
+      "attach": "dialog",
+      "integration": {
+        "name": "Jira Board",
+        "description": "Jira Cloud and Data Center boards. Sources and their credentials are configured in the protected JSON field below.",
+        "token": {
+          "apiOrigin": "https://api.atlassian.com",
+          "scheme": "bearer"
+        },
+        "settings": [
+          {
+            "id": "sources",
+            "label": "Sources (JSON array)",
+            "secret": true
+          }
+        ]
+      },
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host"
+      }
+    }
+  }
+}

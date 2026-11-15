@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jira Board</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app" aria-label="Jira Board">
+      <header class="header">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="brand-copy">
+            <h1>Jira Board</h1>
+            <p id="source-caption">Your work, at a glance</p>
+          </div>
+          <div id="refresh-control" class="refresh-control"></div>
+        </div>
+        <div class="selectors">
+          <div id="source-control" class="source-control"></div>
+          <div id="project-control" class="project-control"></div>
+        </div>
+        <div id="board-control" class="board-control"></div>
+      </header>
+
+      <section class="toolbar" aria-label="Board filters">
+        <div id="search-control" class="search-control"></div>
+        <div id="filter-control" class="filter-control"></div>
+      </section>
+
+      <div id="notice" class="notice"></div>
+      <div class="board-meta">
+        <span id="issue-count">0 issues</span>
+        <span class="board-hint">Drag a card onto a status to move it</span>
+      </div>
+      <section id="board" class="board" aria-label="Jira columns"></section>
+      <div id="state-view" class="state-view"></div>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>
