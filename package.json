@@ -25,7 +25,7 @@
     },
     "id": "jira-board",
     "name": "Jira Board",
-    "icon": "window",
+    "icon": "icon.svg",
     "contributes": {
       "panel": {
         "entry": "panel/index.html"
