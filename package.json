@@ -1,6 +1,6 @@
 {
   "name": "jira-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -31,21 +31,6 @@
         "entry": "panel/index.html"
       },
       "attach": "dialog",
-      "integration": {
-        "name": "Jira Board",
-        "description": "Jira Cloud and Data Center boards. Sources and their credentials are configured in the protected JSON field below.",
-        "token": {
-          "apiOrigin": "https://api.atlassian.com",
-          "scheme": "bearer"
-        },
-        "settings": [
-          {
-            "id": "sources",
-            "label": "Sources (JSON array)",
-            "secret": true
-          }
-        ]
-      },
       "service": {
         "entry": "service/main.js",
         "runtime": "host"

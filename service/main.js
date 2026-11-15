@@ -1,271 +1,112 @@
 // service/main.ts
 import { tmpdir } from "node:os";
-import { join as join2 } from "node:path";
-// node_modules/@openchamber/sdk/dist/scrollbar-style.js
-var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
-var GUEST_SCROLLBAR_CSS = `
-:root {
-  /* Quiet at rest like the app's own thumbs; hover gives a clear grab target. */
-  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 18%, transparent);
-  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 36%, transparent);
-  scrollbar-gutter: stable;
-}
-* {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-:hover, [${GUEST_SCROLLING_ATTRIBUTE}] {
-  scrollbar-color: var(--oc-scrollbar-thumb) transparent;
-}
-/* Chromium's standard scrollbar properties otherwise override its pseudo-elements. */
-@supports selector(::-webkit-scrollbar) {
-  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-width: auto; scrollbar-color: auto; }
-  ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb {
-    background: transparent;
-    border-radius: 999px;
-    min-width: 24px;
-    min-height: 24px;
-  }
-  :hover::-webkit-scrollbar-thumb, [${GUEST_SCROLLING_ATTRIBUTE}]::-webkit-scrollbar-thumb { background: var(--oc-scrollbar-thumb); }
-  ::-webkit-scrollbar-thumb:hover { background: var(--oc-scrollbar-thumb-hover); }
-  ::-webkit-scrollbar-corner { background: transparent; }
-  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
-}
-@media (forced-colors: active) {
-  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-color: auto; }
-  ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background: CanvasText; }
-}
-`;
-function installGuestScrollbarActivity(doc) {
-  const root = doc.documentElement;
-  if (root.hasAttribute("data-oc-scrollbar-activity"))
-    return;
-  root.setAttribute("data-oc-scrollbar-activity", "");
-  const timers = new WeakMap;
-  doc.addEventListener("scroll", (event) => {
-    const target = event.target === doc ? root : event.target;
-    if (!(target instanceof Element))
-      return;
-    if (!target.hasAttribute("data-oc-scrolling"))
-      target.setAttribute("data-oc-scrolling", "");
-    const pending = timers.get(target);
-    if (pending !== undefined)
-      clearTimeout(pending);
-    timers.set(target, setTimeout(() => {
-      timers.delete(target);
-      target.removeAttribute("data-oc-scrolling");
-    }, 1000));
-  }, { capture: true, passive: true });
-}
-var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
-// node_modules/@openchamber/sdk/dist/manifest.js
-var GUEST_PROVIDER_LOGO_BYTES_MAX = 1024 * 1024;
-var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
-var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
-// node_modules/@openchamber/sdk/dist/session-events.js
-var GUEST_SESSION_EVENT_TYPES = [
-  "turn-finished",
-  "turn-failed",
-  "permission-asked",
-  "question-asked",
-  "turn-started",
-  "session-created",
-  "session-archived",
-  "session-deleted"
-];
-var SESSION_EVENTS_IDLE_MS = 10 * 60000;
-var EVENT_TYPES = new Set(GUEST_SESSION_EVENT_TYPES);
-// node_modules/@openchamber/sdk/dist/service-host.js
-var SERVICE_HOST_PATH = "/service/call";
-var OPENCHAMBER_HOST_CALLBACK_URL_ENV = "OPENCHAMBER_HOST_CALLBACK_URL";
-var SERVICE_HOST_TIMEOUT_MS = 30000;
-var SERVICE_SCHEDULE_IDLE_MS = 10 * 60000;
-var MENTIONS_IDLE_MS = 10 * 60000;
-class ServiceHostError extends Error {
-  code;
-  status;
-  constructor(message, code, status) {
-    super(message);
-    this.name = "ServiceHostError";
-    this.code = code;
-    this.status = status;
-  }
-}
-var createServiceHost = ({ env }) => {
-  const call = async (method, input) => {
-    const base = env[OPENCHAMBER_HOST_CALLBACK_URL_ENV];
-    const token = env.OPENCHAMBER_SERVICE_TOKEN;
-    if (!base || !token)
-      throw new ServiceHostError("This service was not started by OpenChamber.", "HOST_UNAVAILABLE", 0);
-    let response;
-    try {
-      response = await fetch(`${base.replace(/\/+$/, "")}${SERVICE_HOST_PATH}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ method, input }),
-        signal: AbortSignal.timeout(SERVICE_HOST_TIMEOUT_MS)
-      });
-    } catch {
-      throw new ServiceHostError("OpenChamber did not answer.", "HOST_UNAVAILABLE", 0);
-    }
-    const body = await response.json().catch(() => null);
-    if (response.ok && body?.result !== undefined)
-      return body.result;
-    throw new ServiceHostError(body?.error?.message ?? `OpenChamber answered HTTP ${response.status}.`, body?.error?.code ?? "HOST_UNAVAILABLE", response.status);
-  };
-  return {
-    sessions: {
-      start: (input) => call("sessions.start", input),
-      send: (sessionId, prompt) => call("sessions.send", { sessionId, prompt }),
-      retry: (sessionId) => call("sessions.retry", { sessionId }),
-      status: (sessionId) => call("sessions.status", { sessionId }),
-      lastReply: (sessionId) => call("sessions.lastReply", { sessionId }),
-      stop: (sessionId) => call("sessions.stop", { sessionId }),
-      answerPermission: (sessionId, requestId, answer) => call("sessions.answerPermission", { sessionId, requestId, ...answer }),
-      answerForm: (sessionId, formId, values, message) => call("sessions.answerForm", { sessionId, formId, values, ...message === undefined ? {} : { message } })
-    },
-    setInstructions: (directory, text) => call("instructions.set", { directory, text }),
-    emit: (topic, data) => call("panels.emit", { topic, data }),
-    readSettings: () => call("settings.read", {}).then(({ settings }) => settings),
-    needsConfiguration: (message) => call("status.set", { needsConfiguration: message }),
-    setMark: (target, mark) => call("marks.set", { target, mark })
-  };
-};
-// node_modules/@openchamber/sdk/dist/file-editor.js
-var patternExpressions = new Map;
-// node_modules/@openchamber/sdk/dist/contract.js
-var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
-var GUEST_GENERATE_LATE_KEEP_MS = 60 * 60000;
-var HOST_REQUEST_ERROR_CODES = [
-  "HOST_UNAVAILABLE",
-  "HOST_TIMEOUT",
-  "HOST_REJECTED",
-  "DISCONNECTED",
-  "DISABLED",
-  "BAD_PATH",
-  "NO_INTEGRATION",
-  "NO_SERVICE",
-  "SERVICE_FAILED",
-  "REQUEST_FAILED",
-  "RESPONSE_TOO_LARGE",
-  "NO_SESSION",
-  "SESSION_BUSY",
-  "NOT_GRANTED",
-  "NO_DIRECTORY",
-  "NOT_FOUND",
-  "FILE_TOO_LARGE",
-  "DENIED",
-  "NO_MODEL",
-  "MODEL_FAILED",
-  "UNSUPPORTED"
-];
-var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
-var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
-var serviceStatusSet = new Set(SERVICE_STATUS_VALUES);
-var fileStatKindSet = new Set(GUEST_FILE_STAT_KINDS);
-var HOST_PUSH_TYPES = new Set([
-  "workspace",
-  "shells",
-  "ready",
-  "directory",
-  "session",
-  "connection",
-  "settings",
-  "session-lifecycle",
-  "item",
-  "resolve",
-  "action",
-  "service-event",
-  "status-control-event",
-  "popover-closed",
-  "file-open",
-  "file-snapshot",
-  "file-saved",
-  "generate-late",
-  "microphone-audio",
-  "microphone-ended"
-]);
-// node_modules/@openchamber/sdk/dist/service-providers.js
-var BROWSER_CONTROL_ACTIONS = [
-  "browser.open",
-  "browser.snapshot",
-  "browser.click",
-  "browser.type",
-  "browser.select",
-  "browser.scroll",
-  "browser.back",
-  "browser.forward",
-  "browser.inspect",
-  "browser.capture",
-  "browser.resize",
-  "browser.close"
-];
-var BROWSER_PROVIDER_IDLE_MS = 10 * 60000;
-var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
-var SOURCE_CONTROL_PROVIDER_IDLE_MS = 10 * 60000;
-var NOTIFICATIONS_PROVIDER_IDLE_MS = 10 * 60000;
-var TRACKER_PROVIDER_IDLE_MS = 10 * 60000;
-var QUOTA_PROVIDER_IDLE_MS = 10 * 60000;
-// node_modules/@openchamber/sdk/dist/service-surface.js
-var SURFACE_CONTROLLERS = ["none", "agent", "user"];
-var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
+import { join as join3 } from "node:path";
+
 // service/app.ts
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
 // service/config.ts
 var MAX_SOURCES = 16;
+var MAX_NAME_LENGTH = 120;
+var MAX_URL_LENGTH = 2048;
+var MAX_EMAIL_LENGTH = 320;
+var MAX_TOKEN_LENGTH = 8192;
+var MAX_PROJECT_KEY_LENGTH = 128;
 var ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
 class ConfigurationError extends Error {
   name = "ConfigurationError";
 }
-function text(value) {
-  return typeof value === "string" ? value.trim() : "";
+function fail(message, label = "") {
+  throw new ConfigurationError(`${label}${message}`);
 }
-function requiredText(value, field, index) {
-  const result = text(value);
-  if (!result)
-    throw new ConfigurationError(`Source ${index + 1}: “${field}” is required.`);
+function requiredText(value, field, label, maxLength) {
+  if (typeof value !== "string" || !value.trim())
+    fail(`“${field}” is required.`, label);
+  const result = value.trim();
+  if (result.length > maxLength)
+    fail(`“${field}” must be at most ${maxLength} characters.`, label);
   return result;
 }
-function normalizeBaseUrl(value, index) {
+function optionalText(value, field, label, maxLength) {
+  if (value === undefined || value === null)
+    return "";
+  if (typeof value !== "string")
+    fail(`“${field}” must be a string.`, label);
+  const result = value.trim();
+  if (result.length > maxLength)
+    fail(`“${field}” must be at most ${maxLength} characters.`, label);
+  return result;
+}
+function normalizeBaseUrl(value, label) {
   let url;
   try {
     url = new URL(value);
   } catch {
-    throw new ConfigurationError(`Source ${index + 1}: “url” must be an absolute Jira address.`);
+    fail("“url” must be an absolute Jira address.", label);
   }
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const local = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
-    throw new ConfigurationError(`Source ${index + 1}: use HTTPS (HTTP is allowed only for a local Jira server).`);
+    fail("use HTTPS (HTTP is allowed only for a local Jira server).", label);
   }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new ConfigurationError(`Source ${index + 1}: the URL cannot contain credentials, a query, or a fragment.`);
+  if (url.username || url.password || url.search || url.hash || /[?#]/.test(value)) {
+    fail("the URL cannot contain credentials, a query, or a fragment.", label);
   }
   return value.replace(/\/+$/, "");
 }
-function optionalBoardId(value, index) {
+function optionalBoardId(value, label) {
   if (value === undefined || value === null || value === "")
     return;
-  const id = Number(value);
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new ConfigurationError(`Source ${index + 1}: “boardId” must be a positive integer.`);
+  if (typeof value === "string" && !value.trim())
+    return;
+  if (typeof value !== "number" && typeof value !== "string") {
+    fail("“boardId” must be a positive integer.", label);
   }
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0)
+    fail("“boardId” must be a positive integer.", label);
   return id;
 }
-function parseSources(settings) {
-  const raw = settings.sources?.trim();
-  if (!raw)
-    return [];
-  let document;
-  try {
-    document = JSON.parse(raw);
-  } catch {
-    throw new ConfigurationError("Sources must be a valid JSON array.");
+function normalizeSource(value, existing, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail("expected an object.", label);
+  const input = value;
+  const name = requiredText(input.name, "name", label, MAX_NAME_LENGTH);
+  const url = requiredText(input.url, "url", label, MAX_URL_LENGTH);
+  const kind = requiredText(input.type, "type", label, 32);
+  if (kind !== "cloud" && kind !== "datacenter")
+    fail("“type” must be “cloud” or “datacenter”.", label);
+  const email = optionalText(input.email, "email", label, MAX_EMAIL_LENGTH);
+  if (kind === "cloud" && !email)
+    fail("Jira Cloud requires “email”.", label);
+  const baseUrl = normalizeBaseUrl(url, label);
+  const suppliedToken = optionalText(input.token, "token", label, MAX_TOKEN_LENGTH);
+  const canRetainToken = existing !== undefined && existing.kind === kind && new URL(existing.baseUrl).origin === new URL(baseUrl).origin;
+  const token = suppliedToken || (canRetainToken ? existing?.token : "") || "";
+  if (!token) {
+    if (existing)
+      fail("“token” must be non-empty when changing the Jira origin or type.", label);
+    fail("“token” is required for a new source.", label);
   }
+  if (token.length > MAX_TOKEN_LENGTH)
+    fail(`“token” must be at most ${MAX_TOKEN_LENGTH} characters.`, label);
+  const projectKey = optionalText(input.projectKey, "projectKey", label, MAX_PROJECT_KEY_LENGTH);
+  const boardId = optionalBoardId(input.boardId, label);
+  return {
+    name,
+    baseUrl,
+    kind,
+    token,
+    ...kind === "cloud" && email ? { email } : {},
+    ...projectKey ? { defaultProjectKey: projectKey } : {},
+    ...boardId !== undefined ? { defaultBoardId: boardId } : {}
+  };
+}
+function parseSourceInput(value, existing) {
+  return normalizeSource(value, existing, "");
+}
+function parseSourceDocument(document) {
   if (!Array.isArray(document))
     throw new ConfigurationError("Sources must be a JSON array.");
   if (document.length > MAX_SOURCES) {
@@ -273,38 +114,43 @@ function parseSources(settings) {
   }
   const ids = new Set;
   return document.map((entry, index) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new ConfigurationError(`Source ${index + 1}: expected an object.`);
-    }
+    const label = `Source ${index + 1}: `;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      fail("expected an object.", label);
     const value = entry;
-    const id = requiredText(value.id, "id", index);
-    if (!ID_PATTERN.test(id)) {
-      throw new ConfigurationError(`Source ${index + 1}: “id” must be kebab-case (for example, “work-cloud”).`);
-    }
+    const id = requiredText(value.id, "id", label, 64);
+    if (!ID_PATTERN.test(id))
+      fail("“id” must be kebab-case (for example, “work-cloud”).", label);
     if (ids.has(id))
       throw new ConfigurationError(`Duplicate source id “${id}”.`);
     ids.add(id);
-    const kind = requiredText(value.type, "type", index);
-    if (kind !== "cloud" && kind !== "datacenter") {
-      throw new ConfigurationError(`Source ${index + 1}: “type” must be “cloud” or “datacenter”.`);
-    }
-    const email = text(value.email);
-    if (kind === "cloud" && !email) {
-      throw new ConfigurationError(`Source ${index + 1}: Jira Cloud requires “email”.`);
-    }
-    const projectKey = text(value.projectKey);
-    const source = {
+    return {
       id,
-      name: requiredText(value.name, "name", index),
-      baseUrl: normalizeBaseUrl(requiredText(value.url, "url", index), index),
-      kind,
-      token: requiredText(value.token, "token", index),
-      ...email ? { email } : {},
-      ...projectKey ? { defaultProjectKey: projectKey } : {},
-      ...optionalBoardId(value.boardId, index) !== undefined ? { defaultBoardId: optionalBoardId(value.boardId, index) } : {}
+      ...normalizeSource({
+        name: value.name,
+        url: value.baseUrl,
+        type: value.kind,
+        email: value.email,
+        token: value.token,
+        projectKey: value.defaultProjectKey,
+        boardId: value.defaultBoardId
+      }, undefined, label)
     };
-    return source;
   });
+}
+function generateSourceId(name, existingIds) {
+  const ids = new Set(existingIds);
+  let base = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64).replace(/-+$/g, "");
+  if (!base)
+    base = "source";
+  if (!/^[a-z]/.test(base))
+    base = `source-${base}`.slice(0, 64).replace(/-+$/g, "");
+  let id = base;
+  for (let suffix = 2;ids.has(id); suffix += 1) {
+    const ending = `-${suffix}`;
+    id = `${base.slice(0, 64 - ending.length).replace(/-+$/g, "")}${ending}`;
+  }
+  return id;
 }
 function toPublicSource(source) {
   return {
@@ -312,12 +158,56 @@ function toPublicSource(source) {
     name: source.name,
     baseUrl: source.baseUrl,
     kind: source.kind,
+    ...source.email ? { email: source.email } : {},
     ...source.defaultProjectKey ? { defaultProjectKey: source.defaultProjectKey } : {},
     ...source.defaultBoardId !== undefined ? { defaultBoardId: source.defaultBoardId } : {}
   };
 }
-function findSource(settings, id) {
-  const source = parseSources(settings).find((candidate) => candidate.id === id);
+
+// service/sources.ts
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+var SOURCES_FILE = "sources.json";
+function sourcesPath(dataDir) {
+  return join(dataDir, SOURCES_FILE);
+}
+async function readSources(dataDir) {
+  let raw;
+  try {
+    raw = await readFile(sourcesPath(dataDir), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return [];
+    throw new ConfigurationError("Jira source storage could not be read.");
+  }
+  let document;
+  try {
+    document = JSON.parse(raw);
+  } catch {
+    throw new ConfigurationError("Jira source storage must contain valid JSON.");
+  }
+  return parseSourceDocument(document);
+}
+async function writeSources(dataDir, sources) {
+  const validated = parseSourceDocument(sources);
+  await mkdir(dataDir, { recursive: true });
+  const target = sourcesPath(dataDir);
+  const temporary = join(dataDir, `sources-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(validated, null, 2)}
+`, { mode: 384, flag: "wx" });
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => {
+      return;
+    });
+    throw error;
+  }
+  return validated;
+}
+async function findSource(dataDir, id) {
+  const source = (await readSources(dataDir)).find((candidate) => candidate.id === id);
   if (!source)
     throw new ConfigurationError(`Jira source “${id}” was not found.`);
   return source;
@@ -593,9 +483,9 @@ class JiraClient {
 }
 
 // service/preferences.ts
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { mkdir as mkdir2, readFile as readFile2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { join as join2 } from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
 var DEFAULT_PREFERENCES = {
   sourceId: null,
   projectKey: null,
@@ -620,19 +510,19 @@ function sanitize(value) {
 }
 async function readPreferences(dataDir) {
   try {
-    return sanitize(JSON.parse(await readFile(join(dataDir, "preferences.json"), "utf8")));
+    return sanitize(JSON.parse(await readFile2(join2(dataDir, "preferences.json"), "utf8")));
   } catch {
     return { ...DEFAULT_PREFERENCES };
   }
 }
 async function writePreferences(dataDir, value) {
   const preferences = sanitize(value);
-  await mkdir(dataDir, { recursive: true });
-  const target = join(dataDir, "preferences.json");
-  const temporary = join(dataDir, `preferences-${randomUUID()}.tmp`);
-  await writeFile(temporary, `${JSON.stringify(preferences, null, 2)}
+  await mkdir2(dataDir, { recursive: true });
+  const target = join2(dataDir, "preferences.json");
+  const temporary = join2(dataDir, `preferences-${randomUUID2()}.tmp`);
+  await writeFile2(temporary, `${JSON.stringify(preferences, null, 2)}
 `, { mode: 384 });
-  await rename(temporary, target);
+  await rename2(temporary, target);
   return preferences;
 }
 
@@ -695,11 +585,11 @@ function positiveInteger(value, label) {
   return result;
 }
 function createJiraBoardServer(options) {
-  const preferenceWrites = new SerialQueue;
+  const mutations = new SerialQueue;
+  const persistPreferences = options.writePreferencesImpl ?? writePreferences;
   const client = async (sourceId, signal) => {
-    const pending = options.readSettings();
-    const settings = signal ? await raceWithSignal(pending, signal) : await pending;
-    const source = findSource(settings, sourceId);
+    const pending = findSource(options.dataDir, sourceId);
+    const source = signal ? await raceWithSignal(pending, signal) : await pending;
     return new JiraClient(source, options.fetchImpl);
   };
   return createServer(async (request, response) => {
@@ -717,7 +607,7 @@ function createJiraBoardServer(options) {
       if (method === "GET" && url.pathname === "/api/bootstrap") {
         const preferences = await readPreferences(options.dataDir);
         try {
-          const sources = parseSources(await options.readSettings());
+          const sources = await readSources(options.dataDir);
           send(response, 200, { sources: sources.map(toPublicSource), preferences, configError: null });
         } catch (error) {
           if (!(error instanceof ConfigurationError))
@@ -728,16 +618,75 @@ function createJiraBoardServer(options) {
       }
       if (method === "PUT" && url.pathname === "/api/preferences") {
         const input = await body(request);
-        const preferences = await preferenceWrites.run(() => (options.writePreferencesImpl ?? writePreferences)(options.dataDir, input));
+        const preferences = await mutations.run(() => persistPreferences(options.dataDir, input));
         send(response, 200, { preferences });
         return;
       }
       const parts = pathParts(url.pathname);
-      if (parts[0] !== "api" || parts[1] !== "sources" || !parts[2]) {
+      if (parts[0] !== "api" || parts[1] !== "sources") {
+        send(response, 404, { error: "Not found" });
+        return;
+      }
+      if (method === "POST" && parts.length === 2) {
+        const input = objectBody(await body(request));
+        const source = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          if (sources.length >= MAX_SOURCES) {
+            throw new ConfigurationError(`No more than ${MAX_SOURCES} Jira sources are supported.`);
+          }
+          const details = parseSourceInput(input);
+          const created = {
+            id: generateSourceId(details.name, sources.map((candidate) => candidate.id)),
+            ...details
+          };
+          await writeSources(options.dataDir, [...sources, created]);
+          return created;
+        });
+        send(response, 201, { source: toPublicSource(source) });
+        return;
+      }
+      if (!parts[2]) {
         send(response, 404, { error: "Not found" });
         return;
       }
       const sourceId = parts[2];
+      if (method === "PUT" && parts.length === 3) {
+        const input = objectBody(await body(request));
+        const source = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          const index = sources.findIndex((candidate) => candidate.id === sourceId);
+          const existing = sources[index];
+          if (index < 0 || !existing)
+            throw new ConfigurationError(`Jira source “${sourceId}” was not found.`);
+          const updated = { id: existing.id, ...parseSourceInput(input, existing) };
+          const next = [...sources];
+          next[index] = updated;
+          await writeSources(options.dataDir, next);
+          return updated;
+        });
+        send(response, 200, { source: toPublicSource(source) });
+        return;
+      }
+      if (method === "DELETE" && parts.length === 3) {
+        const preferences = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          if (!sources.some((candidate) => candidate.id === sourceId)) {
+            throw new ConfigurationError(`Jira source “${sourceId}” was not found.`);
+          }
+          await writeSources(options.dataDir, sources.filter((candidate) => candidate.id !== sourceId));
+          let current = { ...DEFAULT_PREFERENCES };
+          try {
+            current = await readPreferences(options.dataDir);
+            if (current.sourceId === sourceId) {
+              current = { ...current, sourceId: null, projectKey: null, boardId: null };
+              current = await persistPreferences(options.dataDir, current);
+            }
+          } catch {}
+          return current;
+        });
+        send(response, 200, { ok: true, preferences });
+        return;
+      }
       if (method === "GET" && parts.length === 4 && parts[3] === "projects") {
         send(response, 200, { projects: await (await client(sourceId)).projects() });
         return;
@@ -792,11 +741,9 @@ if (!Number.isSafeInteger(port) || port <= 0 || port > 65535) {
 }
 if (!token)
   throw new Error("OPENCHAMBER_SERVICE_TOKEN is required.");
-var host = createServiceHost({ env: process.env });
 var server = createJiraBoardServer({
   token,
-  dataDir: process.env.OPENCHAMBER_SERVICE_DATA_DIR ?? join2(tmpdir(), "openchamber-jira-board"),
-  readSettings: () => host.readSettings()
+  dataDir: process.env.OPENCHAMBER_SERVICE_DATA_DIR ?? join3(tmpdir(), "openchamber-jira-board")
 });
 server.listen(port, "127.0.0.1", () => {
   console.log(`Jira Board service listening on 127.0.0.1:${port}`);

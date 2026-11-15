@@ -1,8 +1,15 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { ConfigurationError, findSource, parseSources, toPublicSource } from './config.ts';
+import {
+  ConfigurationError,
+  MAX_SOURCES,
+  generateSourceId,
+  parseSourceInput,
+  toPublicSource,
+} from './config.ts';
+import { findSource, readSources, writeSources } from './sources.ts';
 import { JiraClient, JiraError, raceWithSignal, type JiraFetch } from './jira.ts';
-import { readPreferences, writePreferences } from './preferences.ts';
+import { DEFAULT_PREFERENCES, readPreferences, writePreferences } from './preferences.ts';
 import { SerialQueue } from '../shared/serial-queue.ts';
 
 const BODY_LIMIT = 32_768;
@@ -11,7 +18,6 @@ const TRANSITION_TIMEOUT_MS = 12_000;
 type AppOptions = {
   token: string;
   dataDir: string;
-  readSettings: () => Promise<Record<string, string>>;
   fetchImpl?: JiraFetch;
   transitionTimeoutMs?: number;
   writePreferencesImpl?: typeof writePreferences;
@@ -61,11 +67,11 @@ function positiveInteger(value: string | undefined, label: string): number {
 }
 
 export function createJiraBoardServer(options: AppOptions): Server {
-  const preferenceWrites = new SerialQueue();
+  const mutations = new SerialQueue();
+  const persistPreferences = options.writePreferencesImpl ?? writePreferences;
   const client = async (sourceId: string, signal?: AbortSignal): Promise<JiraClient> => {
-    const pending = options.readSettings();
-    const settings = signal ? await raceWithSignal(pending, signal) : await pending;
-    const source = findSource(settings, sourceId);
+    const pending = findSource(options.dataDir, sourceId);
+    const source = signal ? await raceWithSignal(pending, signal) : await pending;
     return new JiraClient(source, options.fetchImpl);
   };
 
@@ -85,7 +91,7 @@ export function createJiraBoardServer(options: AppOptions): Server {
       if (method === 'GET' && url.pathname === '/api/bootstrap') {
         const preferences = await readPreferences(options.dataDir);
         try {
-          const sources = parseSources(await options.readSettings());
+          const sources = await readSources(options.dataDir);
           send(response, 200, { sources: sources.map(toPublicSource), preferences, configError: null });
         } catch (error) {
           if (!(error instanceof ConfigurationError)) throw error;
@@ -95,19 +101,81 @@ export function createJiraBoardServer(options: AppOptions): Server {
       }
       if (method === 'PUT' && url.pathname === '/api/preferences') {
         const input = await body(request);
-        const preferences = await preferenceWrites.run(() => (
-          options.writePreferencesImpl ?? writePreferences
-        )(options.dataDir, input));
+        const preferences = await mutations.run(() => persistPreferences(options.dataDir, input));
         send(response, 200, { preferences });
         return;
       }
 
       const parts = pathParts(url.pathname);
-      if (parts[0] !== 'api' || parts[1] !== 'sources' || !parts[2]) {
+      if (parts[0] !== 'api' || parts[1] !== 'sources') {
+        send(response, 404, { error: 'Not found' });
+        return;
+      }
+
+      if (method === 'POST' && parts.length === 2) {
+        const input = objectBody(await body(request));
+        const source = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          if (sources.length >= MAX_SOURCES) {
+            throw new ConfigurationError(`No more than ${MAX_SOURCES} Jira sources are supported.`);
+          }
+          const details = parseSourceInput(input);
+          const created = {
+            id: generateSourceId(details.name, sources.map((candidate) => candidate.id)),
+            ...details,
+          };
+          await writeSources(options.dataDir, [...sources, created]);
+          return created;
+        });
+        send(response, 201, { source: toPublicSource(source) });
+        return;
+      }
+
+      if (!parts[2]) {
         send(response, 404, { error: 'Not found' });
         return;
       }
       const sourceId = parts[2];
+
+      if (method === 'PUT' && parts.length === 3) {
+        const input = objectBody(await body(request));
+        const source = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          const index = sources.findIndex((candidate) => candidate.id === sourceId);
+          const existing = sources[index];
+          if (index < 0 || !existing) throw new ConfigurationError(`Jira source “${sourceId}” was not found.`);
+          const updated = { id: existing.id, ...parseSourceInput(input, existing) };
+          const next = [...sources];
+          next[index] = updated;
+          await writeSources(options.dataDir, next);
+          return updated;
+        });
+        send(response, 200, { source: toPublicSource(source) });
+        return;
+      }
+
+      if (method === 'DELETE' && parts.length === 3) {
+        const preferences = await mutations.run(async () => {
+          const sources = await readSources(options.dataDir);
+          if (!sources.some((candidate) => candidate.id === sourceId)) {
+            throw new ConfigurationError(`Jira source “${sourceId}” was not found.`);
+          }
+          await writeSources(options.dataDir, sources.filter((candidate) => candidate.id !== sourceId));
+          let current = { ...DEFAULT_PREFERENCES };
+          try {
+            current = await readPreferences(options.dataDir);
+            if (current.sourceId === sourceId) {
+              current = { ...current, sourceId: null, projectKey: null, boardId: null };
+              current = await persistPreferences(options.dataDir, current);
+            }
+          } catch {
+            // The source deletion is already committed; preference cleanup is best effort.
+          }
+          return current;
+        });
+        send(response, 200, { ok: true, preferences });
+        return;
+      }
 
       if (method === 'GET' && parts.length === 4 && parts[3] === 'projects') {
         send(response, 200, { projects: await (await client(sourceId)).projects() });

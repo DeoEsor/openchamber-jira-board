@@ -23,12 +23,13 @@
 - **Bring different Jira sites together.** Switch between Jira Cloud and self-hosted Data Center sources from one panel.
 - **Work with the board you already know.** Jira columns, statuses, assignees, issue types, and priorities come from your board configuration.
 - **Change status, not just view it.** Drag cards between columns or onto a specific status when a column contains several statuses.
-- **Keep credentials out of the UI.** Authentication is handled by a local, authenticated OpenChamber extension service; tokens are never sent to the panel.
+- **Add sources without editing JSON.** A structured Source Manager handles Cloud and Data Center fields, while credentials stay in the local extension data directory.
 
 ## Features
 
 - Jira Cloud using email + API token, and Jira Data Center using a personal access token.
 - Up to 16 independently configured Jira sources.
+- A built-in **Source Manager** with structured fields, add/edit/remove actions, and credential-preserving edits.
 - Source, project, and Jira Software board selectors, including **All projects**.
 - Restored source, project, board, and assignee-filter selections.
 - Fast client-side search by issue key, summary, type, or assignee.
@@ -52,9 +53,9 @@ Bun is **not required to install the downloaded package** because the built pane
 
 1. [Download the latest source ZIP](https://github.com/DeoEsor/openchamber-jira-board/archive/refs/heads/main.zip) and unzip it.
 2. In OpenChamber, open **Settings → Extensions** and install the unzipped folder as a local extension.
-3. Approve the **Jira Board integration** and its **local service** when prompted.
+3. Approve the **local service** when prompted.
 4. Open **Jira Board** from the extension rail. For a wider view, open it from the **+** menu as a dialog.
-5. Continue with [Connect Jira](#connect-jira).
+5. Click **+ Add source** and continue with [Connect Jira](#connect-jira).
 
 ### Option 2: Clone with Git
 
@@ -66,87 +67,47 @@ Open **Settings → Extensions** in OpenChamber and install the cloned `opencham
 
 ## Connect Jira
 
-Open **Settings → Integrations → Jira Board** and paste a JSON array into **Sources (JSON array)**.
+Open **Jira Board** and click **+ Add source** on the empty state. If you already have sources, click **Sources** in the header, then **+ Add source**.
 
-> **Leave the generic Access token field empty.** OpenChamber's integration manifest requires that field, but Jira Board does not use it. The local service reads credentials only from the protected `sources` setting.
+The Source Manager keeps setup inside the extension: no JSON, generic integration token, or manual identifier is required.
 
 ### Jira Cloud
 
-Create an API token in your Atlassian account under **Security → API tokens**, then configure:
-
-```json
-[
-  {
-    "id": "work-cloud",
-    "name": "Work Cloud",
-    "url": "https://your-company.atlassian.net",
-    "type": "cloud",
-    "email": "you@example.com",
-    "token": "YOUR_JIRA_CLOUD_API_TOKEN"
-  }
-]
-```
+1. Create an API token in your Atlassian account under **Security → API tokens**.
+2. Choose **Jira Cloud** as the type.
+3. Enter a display name, your `https://your-company.atlassian.net` URL, Atlassian account email, and API token.
+4. Click **Add source**.
 
 ### Jira Data Center
 
-Create a personal access token in your Jira profile under **Personal Access Tokens**, then configure:
+1. Create a personal access token in your Jira profile under **Personal Access Tokens**.
+2. Choose **Jira Data Center** as the type.
+3. Enter a display name, the Jira base URL, and personal access token. No email is required.
+4. Click **Add source**.
 
-```json
-[
-  {
-    "id": "internal-dc",
-    "name": "Internal Data Center",
-    "url": "https://jira.internal.example.com",
-    "type": "datacenter",
-    "token": "YOUR_JIRA_DC_PERSONAL_ACCESS_TOKEN"
-  }
-]
-```
+Data Center context paths such as `https://example.com/jira` are supported. HTTPS is required except for local development addresses.
 
-Data Center context paths such as `https://example.com/jira` are supported.
+### Manage sources
 
-### Multiple sources and default selections
+Click **Sources** to see every configured connection. **Edit** changes its name, URL, type, email, or default selection. Leave **New API token / PAT** blank to keep the existing credential, or enter a new one to replace it. Changing the Jira URL or connection type requires entering the credential again. **Remove** deletes only the local connection; it does not change Jira issues or boards.
 
-Add up to 16 objects to the same array. Optional `projectKey` and `boardId` fields choose what opens first:
+Add up to 16 sources and switch between them using the main **Source** selector. Expand **Default selection (optional)** in the form to set the project key and board ID that should open first.
 
-```json
-[
-  {
-    "id": "work-cloud",
-    "name": "Work Cloud",
-    "url": "https://your-company.atlassian.net",
-    "type": "cloud",
-    "email": "you@example.com",
-    "token": "YOUR_JIRA_CLOUD_API_TOKEN",
-    "projectKey": "PRODUCT",
-    "boardId": 42
-  },
-  {
-    "id": "internal-dc",
-    "name": "Internal Data Center",
-    "url": "https://jira.internal.example.com",
-    "type": "datacenter",
-    "token": "YOUR_JIRA_DC_PERSONAL_ACCESS_TOKEN",
-    "projectKey": "PLATFORM",
-    "boardId": 17
-  }
-]
-```
+> **Upgrading from 0.1:** the Settings → Integrations JSON card has been removed. Re-add each source once through **+ Add source**; old JSON credentials are not migrated.
 
-Save the settings, return to Jira Board, and choose **Check again** or **Refresh**. You can change sources, projects, and boards in the panel without editing the JSON again.
+![Source Manager with a Jira Cloud and Jira Data Center connection](docs/assets/source-manager.png)
 
 ### Source field reference
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `id` | Yes | Unique kebab-case identifier, such as `work-cloud`. |
-| `name` | Yes | Display name shown in the source selector. |
-| `url` | Yes | Jira base URL. HTTPS is required except for localhost. |
-| `type` | Yes | `cloud` or `datacenter`. |
-| `email` | Cloud only | Atlassian account email used with the Cloud API token. |
-| `token` | Yes | Cloud API token or Data Center personal access token. |
-| `projectKey` | No | Default Jira project key. Leave it out to start with the standard selection behavior. |
-| `boardId` | No | Default Jira Software board ID. |
+| **Name** | Yes | Display name shown in the source selector. A unique internal ID is generated automatically. |
+| **Jira type** | Yes | Jira Cloud or Jira Data Center. |
+| **Jira URL** | Yes | Jira base URL. HTTPS is required except for localhost. |
+| **Atlassian account email** | Cloud only | Email used with the Cloud API token. |
+| **API token / PAT** | New sources | Cloud API token or Data Center personal access token. On edit, leave blank to preserve it only when the URL and type stay unchanged. |
+| **Project key** | No | Default Jira project key. |
+| **Board ID** | No | Default Jira Software board ID. |
 
 ## Use the board
 
@@ -160,16 +121,17 @@ Save the settings, return to Jira Board, and choose **Check again** or **Refresh
 
 Jira Board uses Jira's actual workflow transitions; it does not directly rewrite an issue's status field. A move fails when no direct transition exists or when Jira requires additional fields. In that case, only the affected card returns to its previous column and the Jira error is shown.
 
-Each transition has one overall **12-second deadline**, including settings lookup, workflow discovery, and the update request. If the connection drops or the deadline expires, the result is treated as unknown rather than assumed to have failed. The panel waits for the original operation window, reloads Jira, and keeps that card locked until its actual status is confirmed.
+Each transition has one overall **12-second deadline**, including source lookup, workflow discovery, and the update request. If the connection drops or the deadline expires, the result is treated as unknown rather than assumed to have failed. The panel waits for the original operation window, reloads Jira, and keeps that card locked until its actual status is confirmed.
 
 Issues outside the configured board columns appear under **Other statuses**. That synthetic column is read-only and is not a drop target.
 
 ## Privacy and security
 
-- Credentials never appear in the panel, host `ready.settings`, bootstrap responses, or preference files.
+- Credentials are entered in the Source Manager and sent only to the authenticated local extension service. They are never returned to the panel, included in bootstrap responses, or written to preference files.
+- Sources and credentials are stored outside the package in `OPENCHAMBER_SERVICE_DATA_DIR/sources.json` with owner-only file permissions (`0600`). The file is not additionally encrypted; protect your OS account and backups accordingly.
 - The panel communicates only with its extension service through OpenChamber; the service makes Jira requests.
 - The service listens only on `127.0.0.1` and requires bearer authentication on every route, including `/health`.
-- Preferences are written atomically to `OPENCHAMBER_SERVICE_DATA_DIR`, outside the package. Writes are serialized across all open panel and dialog frames.
+- Source and preference files use atomic writes, and mutations are serialized across all open panel and dialog frames.
 
 ## Current limits
 
@@ -190,7 +152,7 @@ bun run build
 bun run check
 ```
 
-The test suite uses a fake Jira API and covers Cloud Basic authentication, Data Center Bearer authentication, board mapping, transition deadlines, overlapping preference writes, and credential redaction. Pure state tests cover concurrent optimistic moves, exact rollback versions, delayed reconciliation, stable assignee identity, and source selection.
+The test suite uses a fake Jira API and covers Cloud Basic authentication, Data Center Bearer authentication, board mapping, transition deadlines, source add/edit/delete and persistence, overlapping writes, and credential redaction. Pure state tests cover concurrent optimistic moves, exact rollback versions, delayed reconciliation, stable assignee identity, and source selection.
 
 For a local service smoke check:
 
@@ -201,7 +163,7 @@ OPENCHAMBER_SERVICE_DATA_DIR="$HOME/.local/share/openchamber-jira-board-dev" \
 node service/main.js
 ```
 
-Then call `/health` with `Authorization: Bearer t`. Other routes require the real OpenChamber callback environment because settings are read through `createServiceHost(...).readSettings()`.
+Then call `/health` with `Authorization: Bearer t`. Source and preference data are written only to the temporary directory assigned by `OPENCHAMBER_SERVICE_DATA_DIR`.
 
 ---
 

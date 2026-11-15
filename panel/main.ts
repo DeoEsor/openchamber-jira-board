@@ -1,4 +1,4 @@
-import { connectHost, HostRequestError } from '@openchamber/sdk';
+import { connectHost } from '@openchamber/sdk';
 import {
   applyHostReady,
   mountBanner,
@@ -17,6 +17,7 @@ import type {
   JiraBoard,
   JiraIssue,
   JiraProject,
+  JiraSourceInput,
   JiraStatus,
   PublicJiraSource,
 } from '../shared/types.ts';
@@ -29,6 +30,8 @@ import {
   type OptimisticMove,
 } from '../shared/board-state.ts';
 import { SerialQueue } from '../shared/serial-queue.ts';
+import { hasUnknownOutcome, mutationTransportHasUnknownOutcome } from '../shared/request-outcome.ts';
+import { createSourceManager } from './source-manager.ts';
 
 const host = connectHost();
 const TRANSITION_RECONCILE_DELAY_MS = 13_000;
@@ -90,6 +93,8 @@ let boardSelect: ReturnType<typeof mountSelect>;
 let searchField: ReturnType<typeof mountSearchField>;
 let filterTabs: ReturnType<typeof mountTabs>;
 let refreshButton: ReturnType<typeof mountButton>;
+let sourcesButton: ReturnType<typeof mountButton>;
+let sourceManager: ReturnType<typeof createSourceManager>;
 let mounted = false;
 let initialized = false;
 let selectionVersion = 0;
@@ -105,18 +110,25 @@ function currentSource(): PublicJiraSource | null {
   return state.sources.find((source) => source.id === state.sourceId) ?? null;
 }
 
-async function api<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
+async function api<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const transitionRequest = method === 'POST' && path.endsWith('/transitions');
-  const result = await host.serviceRequest({
-    method,
-    path,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  let result;
+  try {
+    result = await host.serviceRequest({
+      method,
+      path,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (error) {
+    if (method === 'GET' || !mutationTransportHasUnknownOutcome(error)) throw error;
+    const message = error instanceof Error ? error.message : 'The local service request failed.';
+    throw new ServiceRequestError(message, true);
+  }
   let parsed: unknown = {};
   try {
     parsed = result.body ? JSON.parse(result.body) : {};
   } catch {
-    throw new ServiceRequestError('The Jira Board service returned an invalid response.', transitionRequest);
+    throw new ServiceRequestError('The Jira Board service returned an invalid response.', method !== 'GET');
   }
   if (result.status < 200 || result.status >= 300) {
     const message = parsed && typeof parsed === 'object' && 'error' in parsed
@@ -220,6 +232,8 @@ function render(): void {
     loading: state.loading !== null,
     disabled: state.loading !== null || (state.pending.size > 0 && state.uncertain.size === 0),
   });
+  sourcesButton.update({ disabled: state.loading === 'bootstrap' });
+  sourceManager.updateSources(state.sources);
   element('source-caption').textContent = source ? `${source.name} · ${source.baseUrl}` : 'Your work, at a glance';
   element('issue-count').textContent = `${filters.visible.length} of ${state.board?.issues.length ?? 0} issues`;
 
@@ -248,26 +262,19 @@ function render(): void {
     }));
   } else if (state.configError) {
     setView(`config-error:${state.configError}`, (root) => {
-      const banner = mountBanner(root, { tone: 'error', title: 'Check the sources JSON', body: state.configError ?? undefined });
+      const banner = mountBanner(root, { tone: 'error', title: 'Source storage needs attention', body: state.configError ?? undefined });
       const help = document.createElement('p');
       help.className = 'config-help';
-      help.textContent = 'Edit Settings → Integrations → Jira Board → Sources, then retry. See the extension README for a two-source example.';
+      help.textContent = 'Your stored sources were not overwritten. Check local file permissions or restore the source store, then retry.';
       root.append(help);
       return banner;
     });
   } else if (!state.sources.length && state.loading !== 'bootstrap') {
-    setView('no-sources', (root) => {
-      const empty = mountEmpty(root, {
-        title: 'Connect your first Jira source',
-        body: 'Open Settings → Integrations → Jira Board and paste a JSON array into Sources. Cloud uses email + API token; Data Center uses a personal access token.',
-        action: { label: 'Check again', onClick: () => void refresh() },
-      });
-      const help = document.createElement('p');
-      help.className = 'config-help';
-      help.textContent = 'The generic Access token field can stay empty: each source in the JSON has its own credentials.';
-      root.append(help);
-      return empty;
-    });
+    setView('no-sources', (root) => mountEmpty(root, {
+      title: 'Connect your first Jira source',
+      body: 'Add Jira Cloud with your account email and API token, or Jira Data Center with a personal access token.',
+      action: { label: '+ Add source', onClick: () => sourceManager.openAdd() },
+    }));
   } else if (state.loading && !state.board) {
     setView(`loading:${state.loading}`, (root) => mountSpinner(root, {
       label: state.loading === 'projects' ? 'Loading Jira projects…'
@@ -437,11 +444,6 @@ function renderBoard(visible: JiraIssue[]): void {
   }
 }
 
-function isUnknownTransitionOutcome(error: unknown): boolean {
-  return error instanceof ServiceRequestError && error.outcomeUnknown
-    || error instanceof HostRequestError && (error.code === 'HOST_TIMEOUT' || error.code === 'REQUEST_FAILED');
-}
-
 async function moveIssue(issue: JiraIssue, status: JiraStatus): Promise<void> {
   if (!state.board || !state.sourceId || !state.boardId || state.pending.has(issue.key) || state.uncertain.has(issue.key)) return;
   const sourceId = state.sourceId;
@@ -470,7 +472,7 @@ async function moveIssue(issue: JiraIssue, status: JiraStatus): Promise<void> {
     await loadBoard();
   } catch (error) {
     state.pending.delete(issue.key);
-    if (isUnknownTransitionOutcome(error)) {
+    if (hasUnknownOutcome(error)) {
       state.uncertain.set(issue.key, notBefore);
       render();
       void host.toast({ kind: 'info', message: `${issue.key}: transition outcome is not confirmed. Waiting to reconcile with Jira…` });
@@ -615,9 +617,48 @@ function refresh(): Promise<void> {
   return initialize(preferences());
 }
 
+async function reconcileSourceMutation(error: unknown): Promise<never> {
+  if (hasUnknownOutcome(error)) {
+    try {
+      await refresh();
+    } catch {
+      // The board already exposes refresh failures; preserve the original mutation error.
+    }
+  }
+  throw error;
+}
+
 function mount(): void {
   if (mounted) return;
   mounted = true;
+  sourceManager = createSourceManager(element('source-manager'), {
+    save: async (input: JiraSourceInput, sourceId?: string) => {
+      try {
+        const result = await api<{ source: PublicJiraSource }>(
+          sourceId ? 'PUT' : 'POST',
+          sourceId ? `/api/sources/${encodeURIComponent(sourceId)}` : '/api/sources',
+          input,
+        );
+        return result.source;
+      } catch (error) {
+        return reconcileSourceMutation(error);
+      }
+    },
+    remove: async (sourceId: string) => {
+      try {
+        await api('DELETE', `/api/sources/${encodeURIComponent(sourceId)}`);
+      } catch (error) {
+        await reconcileSourceMutation(error);
+      }
+    },
+    changed: () => { void refresh(); },
+  });
+  sourcesButton = mountButton(element('sources-control'), {
+    label: 'Sources',
+    variant: 'outline',
+    size: 'sm',
+    onClick: () => sourceManager.open(),
+  });
   sourceSelect = mountSelect(element('source-control'), {
     label: 'Source',
     value: null,

@@ -1,6 +1,5 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServiceHost } from '@openchamber/sdk';
 import { createJiraBoardServer } from './app.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -10,11 +9,9 @@ if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
 }
 if (!token) throw new Error('OPENCHAMBER_SERVICE_TOKEN is required.');
 
-const host = createServiceHost({ env: process.env });
 const server = createJiraBoardServer({
   token,
   dataDir: process.env.OPENCHAMBER_SERVICE_DATA_DIR ?? join(tmpdir(), 'openchamber-jira-board'),
-  readSettings: () => host.readSettings(),
 });
 
 server.listen(port, '127.0.0.1', () => {

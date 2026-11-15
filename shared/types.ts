@@ -11,7 +11,17 @@ export type JiraSource = {
   defaultBoardId?: number;
 };
 
-export type PublicJiraSource = Omit<JiraSource, 'token' | 'email'>;
+export type PublicJiraSource = Omit<JiraSource, 'token'>;
+
+export type JiraSourceInput = {
+  name: string;
+  url: string;
+  type: JiraSourceKind;
+  email?: string;
+  token?: string;
+  projectKey?: string;
+  boardId?: number | string;
+};
 
 export type JiraProject = {
   id: string;
